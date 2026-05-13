@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Trading Journal Pro</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#060a12">
+    <style>
+        :root {
+            --bg: #060a12; --surface: #0d1421; --border: #1a2535; --text: #e2eaf6; 
+            --textMuted: #4a5d7a; --accent: #3b82f6; --green: #10b981; --red: #ef4444; 
+            --purple: #8b5cf6; --amber: #f59e0b;
+            --font: 'JetBrains Mono', 'Courier New', monospace;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--font); }
+        body { background: var(--bg); color: var(--text); padding-bottom: 80px; }
+        .container { max-width: 520px; margin: 0 auto; padding: 20px 16px; }
+        .hidden { display: none !important; }
+        input, select, textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; color: var(--text); font-size: 13px; margin-bottom: 12px; outline: none; }
+        input:focus, textarea:focus { border-color: var(--accent); }
+        .btn { width: 100%; padding: 14px; border-radius: 12px; border: none; font-weight: bold; cursor: pointer; text-align: center; font-size: 14px; }
+        .btn-primary { background: linear-gradient(135deg, var(--accent), var(--purple)); color: white; }
+        .btn-danger { background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: var(--red); }
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+        .nav { position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--border); display: flex; justify-content: space-around; padding: 10px 0; z-index: 100; }
+        .nav button { background: none; border: none; color: var(--textMuted); font-weight: bold; cursor: pointer; font-size: 11px; padding: 5px 15px; }
+        .nav button.active { color: var(--accent); border-top: 2px solid var(--accent); }
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+        .stat-box { background: var(--surface); border: 1px solid var(--border); padding: 14px; border-radius: 10px; text-align: center; }
+        .stat-value { font-size: 24px; font-weight: 900; }
+        .stat-label { font-size: 10px; color: var(--textMuted); margin-top: 4px; }
+        .pill { display: inline-block; padding: 5px 10px; border-radius: 20px; font-size: 11px; font-weight: bold; margin: 2px; }
+    </style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script>
+    // --- Constants & State ---
+    const EMPTY_FORM = { id: '', date: new Date().toISOString().split("T")[0], asset: '', direction: 'Buy 📈', entryPrice: '', sl: '', target: '', resultAmount: '', reason: '' };
+    let state = { view: 'login', currentUser: null, trades: [], form: {...EMPTY_FORM} };
+
+    // --- Core Functions ---
+    function render() {
+        const app = document.getElementById('app');
+        if(state.view === 'login') app.innerHTML = renderLogin();
+        else {
+            app.innerHTML = `
+                <div class="container">
+                    ${state.view === 'dashboard' ? renderDashboard() : ''}
+                    ${state.view === 'add' ? renderAddTrade() : ''}
+                    ${state.view === 'analytics' ? renderAnalytics() : ''}
+                </div>
+                <div class="nav">
+                    <button class="${state.view === 'dashboard' ? 'active' : ''}" onclick="setView('dashboard')">⬛ LOG</button>
+                    <button class="${state.view === 'analytics' ? 'active' : ''}" onclick="setView('analytics')">📊 STATS</button>
+                    <button class="btn-primary" style="padding: 5px 15px; width: auto; border-radius: 20px;" onclick="setView('add')">+</button>
+                </div>
+            `;
+        }
+    }
+
+    function setView(view) {
+        if(view === 'add') state.form = {...EMPTY_FORM, id: Date.now()};
+        state.view = view;
+        render();
+    }
+
+    function saveData() {
+        if(state.currentUser) {
+            localStorage.setItem(`tj:${state.currentUser}:trades`, JSON.stringify(state.trades));
+        }
+    }
+
+    // --- Authentication ---
+    function handleLogin() {
+        const user = document.getElementById('username').value.trim();
+        if(!user) return alert("Username দিন");
+        state.currentUser = user;
+        localStorage.setItem("tj:session", user);
+        const savedTrades = localStorage.getItem(`tj:${user}:trades`);
+        state.trades = savedTrades ? JSON.parse(savedTrades) : [];
+        setView('dashboard');
+    }
+
+    function renderLogin() {
+        return `
+        <div class="container" style="display:flex; height:100vh; align-items:center;">
+            <div class="card" style="width:100%; text-align:center;">
+                <h1 style="color:var(--accent); margin-bottom:20px;">Trading Journal</h1>
+                <input type="text" id="username" placeholder="Username (যে কোনো নাম দিন)">
+                <button class="btn btn-primary" onclick="handleLogin()">🔑 Login / Start</button>
+                <p style="font-size:11px; color:var(--textMuted); margin-top:15px;">Data আপনার ফোনেই অফলাইনে সেভ থাকবে</p>
+            </div>
+        </div>`;
+    }
+
+    // --- Dashboard ---
+    function renderDashboard() {
+        let html = `<div style="display:flex; justify-content:space-between; margin-bottom:20px;">
+            <h2>👤 ${state.currentUser}</h2>
+            <button onclick="exportData()" style="background:none; border:none; color:var(--accent); cursor:pointer;">⬇ Export</button>
+        </div>`;
+        
+        if(state.trades.length === 0) return html + `<div style="text-align:center; padding:50px 0; color:var(--textMuted);">কোনো ট্রেড নেই। + বাটনে ক্লিক করে শুরু করুন।</div>`;
+
+        state.trades.sort((a, b) => b.id - a.id).forEach(t => {
+            let color = parseFloat(t.resultAmount) >= 0 ? 'var(--green)' : 'var(--red)';
+            html += `
+            <div class="card" style="border-left: 4px solid ${color}">
+                <div style="display:flex; justify-content:space-between;">
+                    <strong>${t.asset}</strong>
+                    <strong style="color:${color}">${t.resultAmount ? '$'+t.resultAmount : '-'}</strong>
+                </div>
+                <div style="font-size:12px; color:var(--textMuted); margin-top:5px;">
+                    ${t.date} | ${t.direction}
+                </div>
+                <button onclick="deleteTrade(${t.id})" class="btn-danger" style="padding:4px 8px; font-size:11px; margin-top:10px; border-radius:5px; border:none;">Delete</button>
+            </div>`;
+        });
+        return html;
+    }
+
+    // --- Add Trade ---
+    function renderAddTrade() {
+        return `
+        <h2>নতুন ট্রেড</h2><br>
+        <label>Asset (ex: EURUSD)</label>
+        <input type="text" id="t-asset" value="${state.form.asset}">
+        
+        <label>Direction</label>
+        <select id="t-dir">
+            <option value="Buy 📈" ${state.form.direction === 'Buy 📈' ? 'selected' : ''}>Buy 📈</option>
+            <option value="Sell 📉" ${state.form.direction === 'Sell 📉' ? 'selected' : ''}>Sell 📉</option>
+        </select>
+
+        <label>Entry Price</label>
+        <input type="number" step="any" id="t-entry" value="${state.form.entryPrice}">
+        
+        <label>Stop Loss</label>
+        <input type="number" step="any" id="t-sl" value="${state.form.sl}">
+
+        <label>Target</label>
+        <input type="number" step="any" id="t-target" value="${state.form.target}">
+
+        <label>P&L ($)</label>
+        <input type="number" step="any" id="t-pnl" placeholder="+50 বা -30" value="${state.form.resultAmount}">
+
+        <label>Reason / Note</label>
+        <textarea id="t-reason">${state.form.reason}</textarea>
+
+        <button class="btn btn-primary" onclick="saveNewTrade()">✅ সেভ করো</button>
+        `;
+    }
+
+    function saveNewTrade() {
+        const trade = {
+            id: state.form.id || Date.now(),
+            date: new Date().toISOString().split("T")[0],
+            asset: document.getElementById('t-asset').value,
+            direction: document.getElementById('t-dir').value,
+            entryPrice: document.getElementById('t-entry').value,
+            sl: document.getElementById('t-sl').value,
+            target: document.getElementById('t-target').value,
+            resultAmount: document.getElementById('t-pnl').value,
+            reason: document.getElementById('t-reason').value
+        };
+        if(!trade.asset) return alert("Asset দিতে হবে!");
+        state.trades.push(trade);
+        saveData();
+        setView('dashboard');
+    }
+
+    function deleteTrade(id) {
+        if(confirm("ট্রেডটি মুছে ফেলবেন?")) {
+            state.trades = state.trades.filter(t => t.id !== id);
+            saveData();
+            render();
+        }
+    }
+
+    // --- Analytics ---
+    function renderAnalytics() {
+        let totalPnl = 0, wins = 0, losses = 0;
+        state.trades.forEach(t => {
+            let val = parseFloat(t.resultAmount) || 0;
+            totalPnl += val;
+            if(val > 0) wins++; else if(val < 0) losses++;
+        });
+        let winRate = state.trades.length ? Math.round((wins / state.trades.length) * 100) : 0;
+
+        return `
+        <h2>Analytics</h2><br>
+        <div class="stat-grid">
+            <div class="stat-box" style="border-color:${totalPnl >= 0 ? 'var(--green)' : 'var(--red)'}40">
+                <div class="stat-value" style="color:${totalPnl >= 0 ? 'var(--green)' : 'var(--red)'}">${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}</div>
+                <div class="stat-label">TOTAL P&L</div>
+            </div>
+            <div class="stat-box" style="border-color:var(--accent)40">
+                <div class="stat-value" style="color:var(--accent)">${winRate}%</div>
+                <div class="stat-label">WIN RATE</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" style="color:var(--green)">${wins}</div>
+                <div class="stat-label">WINS</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" style="color:var(--red)">${losses}</div>
+                <div class="stat-label">LOSSES</div>
+            </div>
+        </div>
+        <p style="text-align:center; color:var(--textMuted); font-size:12px;">(অফলাইন চার্টিং সিস্টেম)</p>
+        `;
+    }
+
+    // --- Export Data ---
+    function exportData() {
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(state.trades));
+        const anchor = document.createElement('a');
+        anchor.href = dataStr;
+        anchor.download = `trading-journal-${state.currentUser}.json`;
+        anchor.click();
+    }
+
+    // --- App Init ---
+    window.onload = () => {
+        const session = localStorage.getItem("tj:session");
+        if(session) {
+            state.currentUser = session;
+            const savedTrades = localStorage.getItem(`tj:${session}:trades`);
+            if(savedTrades) state.trades = JSON.parse(savedTrades);
+            setView('dashboard');
+        } else {
+            render();
+        }
+
+        // PWA Service Worker Registration
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').catch(err => console.log('SW registration failed:', err));
+        }
+    };
+</script>
+</body>
+</html>
