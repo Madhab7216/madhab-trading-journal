@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Trading Journal Pro</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#060a12">
+  
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800;900&display=swap" rel="stylesheet">
+  
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
+
+  <style>
+    body { margin: 0; padding: 0; background: #060a12; overflow-x: hidden; }
+    * { box-sizing: border-box; font-family: 'JetBrains Mono', monospace; }
+  </style>
+</head>
+<body>
+
+  <div id="root"></div>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(console.error);
+    }
+  </script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+    const { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Cell } = window.Recharts;
+
+    // ─── CONSTANTS ────────────────────────────────────────────────────────────────
+    const MOODS = ["😌 শান্ত", "😤 উত্তেজিত", "😰 ভয়ে", "😠 রাগী", "😐 নিরপেক্ষ"];
+    const DIRECTIONS = ["Buy 📈", "Sell 📉"];
+    const RESULTS = ["Profit ✅", "Loss ❌", "Breakeven ➖"];
+    const TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"];
+    const STRATEGIES = ["Breakout", "Reversal", "Trend Follow", "Scalp", "Swing", "News", "Support/Resistance", "Other"];
+    const SESSIONS = ["Asian 🌏", "London 🇬🇧", "New York 🇺🇸", "Overlap 🔄"];
+    const PLAN_OPTIONS = ["হ্যাঁ ✅", "না ❌", "আংশিক ⚠️"];
+
+    const MOOD_COLORS = {
+      "😌 শান্ত": "#10b981",
+      "😤 উত্তেজিত": "#f97316",
+      "😰 ভয়ে": "#a855f7",
+      "😠 রাগী": "#ef4444",
+      "😐 নিরপেক্ষ": "#64748b",
+    };
+
+    const EMPTY_FORM = {
+      date: new Date().toISOString().split("T")[0],
+      asset: "", direction: "", timeframe: "", session: "", strategy: "", entryPrice: "", sl: "", target: "", lotSize: "", reason: "", setupImageUrl: "", mood: "", confidenceLevel: 3, midNotes: "", result: "", resultAmount: "", followedPlan: "", mistake: "", lesson: "", rating: 0,
+    };
+
+    // ─── HELPERS ─────────────────────────────────────────────────────────────────
+    const calcRR = (entry, sl, target, dir) => {
+      if (!entry || !sl || !target) return null;
+      const e = parseFloat(entry), s = parseFloat(sl), t = parseFloat(target);
+      if (isNaN(e) || isNaN(s) || isNaN(t)) return null;
+      const risk = dir === "Buy 📈" ? e - s : s - e;
+      const reward = dir === "Buy 📈" ? t - e : e - t;
+      if (risk <= 0 || reward <= 0) return null;
+      return (reward / risk).toFixed(2);
+    };
+
+    const buildEquityCurve = (trades) => {
+      let equity = 0;
+      return trades.slice().sort((a, b) => new Date(a.date) - new Date(b.date)).map((t) => {
+          equity += parseFloat(t.resultAmount) || 0;
+          return { date: t.date, equity: parseFloat(equity.toFixed(2)), asset: t.asset };
+        });
+    };
+
+    const getStreak = (trades) => {
+      const sorted = [...trades].sort((a, b) => new Date(b.date) - new Date(a.date));
+      let streak = 0, type = null;
+      for (const t of sorted) {
+        const isWin = t.result?.includes("Profit");
+        const isLoss = t.result?.includes("Loss");
+        if (!isWin && !isLoss) break;
+        if (type === null) { type = isWin ? "W" : "L"; streak = 1; }
+        else if ((type === "W" && isWin) || (type === "L" && isLoss)) streak++;
+        else break;
+      }
+      return { streak, type };
+    };
+
+    const fmtPnL = (v) => {
+      const n = parseFloat(v);
+      if (isNaN(n)) return "—";
+      return (n >= 0 ? "+" : "") + n.toFixed(2);
+    };
+
+    // ─── SUB-COMPONENTS ───────────────────────────────────────────────────────────
+    const css = {
+      bg: "#060a12", surface: "#0d1421", surfaceHover: "#111827", border: "#1a2535", borderBright: "#243044", text: "#e2eaf6", textMuted: "#4a5d7a", textDim: "#2a3a52", accent: "#3b82f6", accentGlow: "#3b82f640", green: "#10b981", red: "#ef4444", purple: "#8b5cf6", amber: "#f59e0b", font: "'JetBrains Mono', monospace",
+    };
+
+    const glassCard = { background: css.surface, border: `1px solid ${css.border}`, borderRadius: 12, padding: 16 };
+
+    const Tag = ({ color, children }) => (
+      <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: color + "18", color, border: `1px solid ${color}30`, fontWeight: 700, letterSpacing: 0.5 }}>{children}</span>
+    );
+
+    const StatCard = ({ label, value, color, sub }) => (
+      <div style={{ ...glassCard, border: `1px solid ${color}25`, padding: "14px 16px" }}>
+        <div style={{ fontSize: 10, color: css.textMuted, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>{label}</div>
+        <div style={{ fontSize: 24, fontWeight: 900, color, lineHeight: 1 }}>{value}</div>
+        {sub && <div style={{ fontSize: 11, color: css.textMuted, marginTop: 4 }}>{sub}</div>}
+      </div>
+    );
+
+    const Field = ({ label, children, required, hint }) => (
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <label style={{ fontSize: 10, fontWeight: 700, color: css.textMuted, textTransform: "uppercase", letterSpacing: 1.5 }}>
+            {label} {required && <span style={{ color: css.amber }}>*</span>}
+          </label>
+          {hint && <span style={{ fontSize: 10, color: css.textDim }}>{hint}</span>}
+        </div>
+        {children}
+      </div>
+    );
+
+    const Input = ({ value, onChange, placeholder, type = "text", style = {} }) => (
+      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} style={{ width: "100%", boxSizing: "border-box", background: css.bg, border: `1px solid ${css.border}`, borderRadius: 8, padding: "10px 14px", color: css.text, fontSize: 13, outline: "none", transition: "border-color 0.2s", ...style }} onFocus={e => e.target.style.borderColor = css.accent} onBlur={e => e.target.style.borderColor = css.border} />
+    );
+
+    const Textarea = ({ value, onChange, placeholder, rows = 3 }) => (
+      <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows} style={{ width: "100%", boxSizing: "border-box", background: css.bg, border: `1px solid ${css.border}`, borderRadius: 8, padding: "10px 14px", color: css.text, fontSize: 13, outline: "none", resize: "vertical", lineHeight: 1.6 }} onFocus={e => e.target.style.borderColor = css.accent} onBlur={e => e.target.style.borderColor = css.border} />
+    );
+
+    const Pills = ({ value, onChange, options, colorMap }) => (
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {options.map((opt) => {
+          const active = value === opt;
+          const color = colorMap?.[opt] || css.accent;
+          return (
+            <button key={opt} onClick={() => onChange(active ? "" : opt)} style={{ padding: "6px 13px", borderRadius: 20, border: `1.5px solid ${active ? color : css.border}`, background: active ? color + "20" : "transparent", color: active ? color : css.textMuted, fontSize: 12, cursor: "pointer", transition: "all 0.15s", fontWeight: active ? 700 : 400 }}>
+              {opt}
+            </button>
+          );
+        })}
+      </div>
+    );
+
+    const Select = ({ value, onChange, options, placeholder }) => (
+      <select value={value} onChange={(e) => onChange(e.target.value)} style={{ width: "100%", background: css.bg, border: `1px solid ${css.border}`, borderRadius: 8, padding: "10px 14px", color: value ? css.text : css.textMuted, fontSize: 13, outline: "none", cursor: "pointer" }}>
+        <option value="">{placeholder}</option>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    );
+
+    const Divider = ({ label }) => (
+      <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "24px 0 20px" }}>
+        <div style={{ flex: 1, height: 1, background: css.border }} />
+        <span style={{ fontSize: 9, fontWeight: 800, color: css.textDim, letterSpacing: 3, textTransform: "uppercase" }}>{label}</span>
+        <div style={{ flex: 1, height: 1, background: css.border }} />
+      </div>
+    );
+
+    const StarRating = ({ value, onChange }) => (
+      <div style={{ display: "flex", gap: 6 }}>
+        {[1, 2, 3, 4, 5].map(n => (
+          <button key={n} onClick={() => onChange(n)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: n <= value ? css.amber : css.textDim, padding: 0, lineHeight: 1 }}>★</button>
+        ))}
+      </div>
+    );
+
+    const Slider = ({ value, onChange, min = 1, max = 5, label }) => (
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+          <span style={{ fontSize: 11, color: css.textMuted }}>{label}</span>
+          <span style={{ fontSize: 12, color: css.accent, fontWeight: 700 }}>{value}/5</span>
+        </div>
+        <input type="range" min={min} max={max} value={value} onChange={e => onChange(Number(e.target.value))} style={{ width: "100%", accentColor: css.accent }} />
+      </div>
+    );
+
+    const ChartTooltip = ({ active, payload, label }) => {
+      if (!active || !payload?.length) return null;
+      return (
+        <div style={{ background: css.surface, border: `1px solid ${css.borderBright}`, borderRadius: 8, padding: "10px 14px" }}>
+          <div style={{ fontSize: 11, color: css.textMuted, marginBottom: 4 }}>{label}</div>
+          {payload.map((p, i) => (
+            <div key={i} style={{ fontSize: 13, color: p.color || css.text, fontWeight: 700 }}>
+              {fmtPnL(p.value)}
+            </div>
+          ))}
+        </div>
+      );
+    };
+
+    // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
+    function TradingJournalPro() {
+      const [trades, setTrades] = useState([]);
+      const [form, setForm] = useState(EMPTY_FORM);
+      const [view, setView] = useState("dashboard");
+      const [selectedTrade, setSelectedTrade] = useState(null);
+      const [weeklyNote, setWeeklyNote] = useState("");
+      const [filterAsset, setFilterAsset] = useState("");
+      const [filterResult, setFilterResult] = useState("");
+      const [filterStrategy, setFilterStrategy] = useState("");
+      const [editMode, setEditMode] = useState(false);
+      const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+      const [importMsg, setImportMsg] = useState("");
+      const [menuOpen, setMenuOpen] = useState(false);
+
+      const [authView, setAuthView] = useState("splash"); 
+      const [currentUser, setCurrentUser] = useState(null);
+      const [authForm, setAuthForm] = useState({ username: "", password: "", confirmPassword: "" });
+      const [authError, setAuthError] = useState("");
+
+      const storageKey = (user, type) => `tj:${user}:${type}`;
+
+      const loadUserData = (username) => {
+        try {
+          const t = localStorage.getItem(storageKey(username, "trades"));
+          const w = localStorage.getItem(storageKey(username, "weekly"));
+          setTrades(t ? JSON.parse(t) : []);
+          setWeeklyNote(w || "");
+        } catch (e) { setTrades([]); }
+      };
+
+      const saveTrades = (updated) => {
+        setTrades(updated);
+        if (!currentUser) return;
+        try { localStorage.setItem(storageKey(currentUser, "trades"), JSON.stringify(updated)); } catch (e) {}
+      };
+
+      const saveWeekly = (val) => {
+        setWeeklyNote(val);
+        if (!currentUser) return;
+        try { localStorage.setItem(storageKey(currentUser, "weekly"), val); } catch (e) {}
+      };
+
+      useEffect(() => {
+        try {
+          const session = localStorage.getItem("tj:session");
+          if (session) {
+            const { username } = JSON.parse(session);
+            setCurrentUser(username);
+            loadUserData(username);
+            setAuthView("app");
+          } else {
+            setAuthView("login");
+          }
+        } catch { setAuthView("login"); }
+      }, []);
+
+      const handleSignup = () => {
+        const { username, password, confirmPassword } = authForm;
+        if (!username.trim() || !password.trim()) { setAuthError("সব ঘর পূরণ করো।"); return; }
+        if (username.trim().length < 3) { setAuthError("Username কমপক্ষে ৩ অক্ষর হতে হবে।"); return; }
+        if (password.length < 4) { setAuthError("Password কমপক্ষে ৪ অক্ষর হতে হবে।"); return; }
+        if (password !== confirmPassword) { setAuthError("Password মিলছে না।"); return; }
+        setAuthError("");
+        try {
+          const userKey = `tj:user:${username.trim().toLowerCase()}`;
+          if (localStorage.getItem(userKey)) { setAuthError("এই username আগে থেকেই আছে।"); return; }
+          const stored = { username: username.trim(), passwordHash: btoa(unescape(encodeURIComponent(password))), createdAt: new Date().toISOString() };
+          localStorage.setItem(userKey, JSON.stringify(stored));
+          localStorage.setItem("tj:session", JSON.stringify({ username: username.trim() }));
+          setCurrentUser(username.trim());
+          setTrades([]); setWeeklyNote("");
+          setAuthView("app");
+        } catch { setAuthError("সমস্যা হয়েছে, আবার চেষ্টা করো।"); }
+      };
+
+      const handleLogin = () => {
+        const { username, password } = authForm;
+        if (!username.trim() || !password.trim()) { setAuthError("Username ও Password দাও।"); return; }
+        setAuthError("");
+        try {
+          const userKey = `tj:user:${username.trim().toLowerCase()}`;
+          const raw = localStorage.getItem(userKey);
+          if (!raw) { setAuthError("এই username পাওয়া যায়নি।"); return; }
+          const stored = JSON.parse(raw);
+          const hash = btoa(unescape(encodeURIComponent(password)));
+          if (stored.passwordHash !== hash) { setAuthError("Password ভুল।"); return; }
+          localStorage.setItem("tj:session", JSON.stringify({ username: stored.username }));
+          setCurrentUser(stored.username);
+          loadUserData(stored.username);
+          setAuthView("app");
+        } catch { setAuthError("সমস্যা হয়েছে, আবার চেষ্টা করো।"); }
+      };
+
+      const handleLogout = () => {
+        try { localStorage.removeItem("tj:session"); } catch {}
+        setCurrentUser(null); setTrades([]); setWeeklyNote("");
+        setAuthForm({ username: "", password: "", confirmPassword: "" });
+        setAuthError(""); setAuthView("login");
+      };
+
+      const setField = (field) => (val) => setForm(f => ({ ...f, [field]: val }));
+
+      const handleSubmit = () => {
+        if (!form.asset || !form.direction) { alert("Asset এবং Direction বাধ্যতামূলক।"); return; }
+        if (editMode && selectedTrade) {
+          const updated = trades.map(t => t.id === selectedTrade.id ? { ...form, id: t.id } : t);
+          saveTrades(updated);
+          setSelectedTrade({ ...form, id: selectedTrade.id });
+          setView("detail");
+        } else {
+          const newTrade = { ...form, id: Date.now() };
+          saveTrades([newTrade, ...trades]);
+          setView("dashboard");
+        }
+        setForm(EMPTY_FORM);
+        setEditMode(false);
+      };
+
+      const deleteTrade = (id) => {
+        saveTrades(trades.filter(t => t.id !== id));
+        setConfirmDeleteId(null);
+        setView("dashboard");
+      };
+
+      const openEdit = (trade) => {
+        setForm({ ...EMPTY_FORM, ...trade });
+        setEditMode(true);
+        setView("add");
+      };
+
+      const exportData = () => {
+        const payload = { version: 1, exportedAt: new Date().toISOString(), trades, weeklyNote };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `trading-journal-${new Date().toISOString().split("T")[0]}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const importData = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const parsed = JSON.parse(ev.target.result);
+            const incoming = parsed.trades || (Array.isArray(parsed) ? parsed : []);
+            const merged = [...incoming];
+            const existingIds = new Set(merged.map(t => t.id));
+            trades.forEach(t => { if (!existingIds.has(t.id)) merged.push(t); });
+            merged.sort((a, b) => b.id - a.id);
+            saveTrades(merged);
+            setImportMsg(`✅ ${incoming.length} টি ট্রেড import হয়েছে!`);
+            setTimeout(() => setImportMsg(""), 3000);
+            if (parsed.weeklyNote) saveWeekly(parsed.weeklyNote);
+          } catch {
+            setImportMsg("❌ ফাইল পড়তে সমস্যা হয়েছে।");
+            setTimeout(() => setImportMsg(""), 3000);
+          }
+        };
+        reader.readAsText(file);
+        e.target.value = "";
+      };
+
+      const stats = useMemo(() => {
+        const total = trades.length;
+        const profits = trades.filter(t => t.result?.includes("Profit"));
+        const losses = trades.filter(t => t.result?.includes("Loss"));
+        const pnlValues = trades.map(t => parseFloat(t.resultAmount) || 0);
+        const totalPnL = pnlValues.reduce((a, b) => a + b, 0);
+        const avgWin = profits.length ? profits.reduce((a, t) => a + (parseFloat(t.resultAmount) || 0), 0) / profits.length : 0;
+        const avgLoss = losses.length ? losses.reduce((a, t) => a + (parseFloat(t.resultAmount) || 0), 0) / losses.length : 0;
+        const winRate = total ? Math.round((profits.length / total) * 100) : 0;
+        const profitFactor = avgLoss !== 0 ? Math.abs(avgWin / avgLoss).toFixed(2) : "∞";
+        const followedPlan = trades.filter(t => t.followedPlan === "হ্যাঁ ✅").length;
+        const { streak, type } = getStreak(trades);
+        const maxDrawdown = (() => {
+          let peak = 0, eq = 0, dd = 0;
+          buildEquityCurve(trades).forEach(p => { eq = p.equity; if (eq > peak) peak = eq; dd = Math.min(dd, eq - peak); });
+          return dd;
+        })();
+        return { total, profits: profits.length, losses: losses.length, totalPnL, avgWin, avgLoss, winRate, profitFactor, followedPlan, streak, streakType: type, maxDrawdown };
+      }, [trades]);
+
+      const filteredTrades = useMemo(() => trades.filter(t => {
+        if (filterAsset && !t.asset?.toLowerCase().includes(filterAsset.toLowerCase())) return false;
+        if (filterResult && t.result !== filterResult) return false;
+        if (filterStrategy && t.strategy !== filterStrategy) return false;
+        return true;
+      }), [trades, filterAsset, filterResult, filterStrategy]);
+
+      const equityCurve = useMemo(() => buildEquityCurve(trades), [trades]);
+
+      const dailyPnL = useMemo(() => {
+        const map = {};
+        trades.forEach(t => {
+          const v = parseFloat(t.resultAmount) || 0;
+          map[t.date] = (map[t.date] || 0) + v;
+        });
+        return Object.entries(map).sort(([a], [b]) => a.localeCompare(b)).map(([date, pnl]) => ({ date, pnl }));
+      }, [trades]);
+
+      const strategyStats = useMemo(() => {
+        const map = {};
+        trades.forEach(t => {
+          const s = t.strategy || "Other";
+          if (!map[s]) map[s] = { wins: 0, total: 0, pnl: 0 };
+          map[s].total++;
+          if (t.result?.includes("Profit")) map[s].wins++;
+          map[s].pnl += parseFloat(t.resultAmount) || 0;
+        });
+        return Object.entries(map).map(([name, d]) => ({ name, wr: Math.round((d.wins / d.total) * 100), total: d.total, pnl: d.pnl }));
+      }, [trades]);
+
+      const BackBar = ({ title }) => (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+          <button onClick={() => { setView("dashboard"); setEditMode(false); setForm(EMPTY_FORM); }} style={{ background: css.surface, border: `1px solid ${css.border}`, color: css.textMuted, borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 14 }}>← Back</button>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: css.text }}>{title}</h2>
+        </div>
+      );
+
+      const Nav = () => {
+        const tabs = [{ id: "dashboard", label: "⬛ LOG" }, { id: "analytics", label: "📊 STATS" }, { id: "weekly", label: "📅 REVIEW" }];
+        return (
+          <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: css.surface, borderTop: `1px solid ${css.border}`, display: "flex", justifyContent: "space-around", padding: "10px 0 max(10px, env(safe-area-inset-bottom))", zIndex: 100 }}>
+            {tabs.map(t => (
+              <button key={t.id} onClick={() => setView(t.id)} style={{ background: "none", border: "none", color: view === t.id ? css.accent : css.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: 1.5, cursor: "pointer", padding: "4px 16px", borderTop: view === t.id ? `2px solid ${css.accent}` : "2px solid transparent" }}>{t.label}</button>
+            ))}
+            <button onClick={() => { setForm(EMPTY_FORM); setEditMode(false); setView("add"); }} style={{ background: `linear-gradient(135deg, ${css.accent}, ${css.purple})`, border: "none", color: "white", borderRadius: 12, padding: "6px 18px", fontSize: 18, cursor: "pointer", fontWeight: 900, boxShadow: `0 4px 20px ${css.accentGlow}` }}>+</button>
+          </div>
+        );
+      };
+
+      if (view === "add") {
+        const rr = calcRR(form.entryPrice, form.sl, form.target, form.direction);
+        return (
+          <div style={{ minHeight: "100vh", background: css.bg, color: css.text, padding: "20px 16px 100px" }}>
+            <div style={{ maxWidth: 520, margin: "0 auto" }}>
+              <BackBar title={editMode ? "✏️ ট্রেড সম্পাদনা" : "নতুন ট্রেড"} />
+              <Divider label="Pre-Trade · সেটআপ" />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <Field label="তারিখ" required><Input type="date" value={form.date} onChange={setField("date")} /></Field>
+                <Field label="Asset" required><Input value={form.asset} onChange={setField("asset")} placeholder="EURUSD, BTC…" /></Field>
+              </div>
+              <Field label="দিক" required>
+                <Pills value={form.direction} onChange={setField("direction")} options={DIRECTIONS} colorMap={{ "Buy 📈": css.green, "Sell 📉": css.red }} />
+              </Field>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <Field label="Timeframe"><Select value={form.timeframe} onChange={setField("timeframe")} options={TIMEFRAMES} placeholder="TF বেছে নাও" /></Field>
+                <Field label="Session"><Select value={form.session} onChange={setField("session")} options={SESSIONS} placeholder="Session" /></Field>
+              </div>
+              <Field label="Strategy"><Pills value={form.strategy} onChange={setField("strategy")} options={STRATEGIES} /></Field>
+              <Divider label="Entry · SL · Target" />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+                <Field label="Entry"><Input type="number" value={form.entryPrice} onChange={setField("entryPrice")} placeholder="0.00" /></Field>
+                <Field label="Stop Loss"><Input type="number" value={form.sl} onChange={setField("sl")} placeholder="0.00" /></Field>
+                <Field label="Target"><Input type="number" value={form.target} onChange={setField("target")} placeholder="0.00" /></Field>
+                <Field label="Lot Size"><Input type="number" value={form.lotSize} onChange={setField("lotSize")} placeholder="0.01" /></Field>
+              </div>
+              {rr && (
+                <div style={{ background: parseFloat(rr) >= 2 ? css.green + "15" : css.amber + "15", border: `1px solid ${parseFloat(rr) >= 2 ? css.green : css.amber}30`, borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
+                  <span style={{ fontSize: 20 }}>{parseFloat(rr) >= 2 ? "✅" : "⚠️"}</span>
+                  <div>
+                    <div style={{ fontSize: 11, color: css.textMuted, letterSpacing: 1 }}>RISK/REWARD RATIO</div>
+                    <div style={{ fontSize: 20, fontWeight: 900, color: parseFloat(rr) >= 2 ? css.green : css.amber }}>1 : {rr}</div>
+                  </div>
+                </div>
+              )}
+              <Field label="কেন এই ট্রেড? (Setup Reason)" required>
+                <Textarea value={form.reason} onChange={setField("reason")} placeholder="সিগনাল, প্যাটার্ন, কনফ্লুয়েন্স বিস্তারিত লেখো…" rows={3} />
+              </Field>
+              <Field label="মনের অবস্থা"><Pills value={form.mood} onChange={setField("mood")} options={MOODS} colorMap={MOOD_COLORS} /></Field>
+              <Field label="Confidence Level">
+                <Slider value={form.confidenceLevel} onChange={setField("confidenceLevel")} min={1} max={5} label={`${form.confidenceLevel === 1 ? "অনিশ্চিত" : form.confidenceLevel === 3 ? "মাঝামাঝি" : "আত্মবিশ্বাসী"}`} />
+              </Field>
+              <Divider label="Post-Trade · রিভিউ" />
+              <Field label="ফলাফল">
+                <Pills value={form.result} onChange={setField("result")} options={RESULTS} colorMap={{ "Profit ✅": css.green, "Loss ❌": css.red, "Breakeven ➖": css.textMuted }} />
+              </Field>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <Field label="P&L ($)" hint="ধনাত্মক বা ঋণাত্মক"><Input type="number" value={form.resultAmount} onChange={setField("resultAmount")} placeholder="+50 বা -30" /></Field>
+                <Field label="Plan মানা হয়েছে?"><Select value={form.followedPlan} onChange={setField("followedPlan")} options={PLAN_OPTIONS} placeholder="বেছে নাও" /></Field>
+              </div>
+              <Field label="চলাকালীন নোট"><Textarea value={form.midNotes} onChange={setField("midNotes")} placeholder="ট্রেড চলাকালে কী মনে হলো…" rows={2} /></Field>
+              <Field label="ভুল কোথায় হলো"><Textarea value={form.mistake} onChange={setField("mistake")} placeholder="কী এড়ানো যেত?" rows={2} /></Field>
+              <Field label="শিক্ষা / Lesson"><Textarea value={form.lesson} onChange={setField("lesson")} placeholder="পরের বার কী করব?" rows={2} /></Field>
+              <Field label="ট্রেড রেটিং"><StarRating value={form.rating} onChange={setField("rating")} /></Field>
+              <button onClick={handleSubmit} style={{ width: "100%", padding: "14px", borderRadius: 12, background: `linear-gradient(135deg, ${css.accent}, ${css.purple})`, border: "none", color: "white", fontSize: 15, fontWeight: 800, cursor: "pointer", letterSpacing: 1, boxShadow: `0 8px 24px ${css.accentGlow}`, marginTop: 8 }}>
+                {editMode ? "✏️ আপডেট করো" : "✅ সেভ করো"}
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (view === "detail" && selectedTrade) {
+        const t = selectedTrade;
+        const rr = calcRR(t.entryPrice, t.sl, t.target, t.direction);
+        const moodColor = MOOD_COLORS[t.mood] || css.textMuted;
+        const resultColor = t.result?.includes("Profit") ? css.green : t.result?.includes("Loss") ? css.red : css.textMuted;
+        const pnl = parseFloat(t.resultAmount);
+        return (
+          <div style={{ minHeight: "100vh", background: css.bg, color: css.text, padding: "20px 16px 100px" }}>
+            <div style={{ maxWidth: 520, margin: "0 auto" }}>
+              <BackBar title={`${t.asset} · ${t.date}`} />
+              <div style={{ ...glassCard, marginBottom: 12, borderLeft: `3px solid ${resultColor}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 26, fontWeight: 900, color: css.text }}>{t.asset}</div>
+                    <div style={{ fontSize: 12, color: css.textMuted, marginTop: 2 }}>{t.date} · {t.timeframe} · {t.session}</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 14, color: t.direction === "Buy 📈" ? css.green : css.red, fontWeight: 700 }}>{t.direction}</div>
+                    {!isNaN(pnl) && <div style={{ fontSize: 22, fontWeight: 900, color: resultColor, marginTop: 4 }}>{fmtPnL(pnl)}</div>}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                  {t.result && <Tag color={resultColor}>{t.result}</Tag>}
+                  {t.strategy && <Tag color={css.accent}>{t.strategy}</Tag>}
+                  {t.mood && <Tag color={moodColor}>{t.mood}</Tag>}
+                  {t.followedPlan && <Tag color={t.followedPlan.includes("হ্যাঁ") ? css.green : t.followedPlan.includes("না") ? css.red : css.amber}>{t.followedPlan}</Tag>}
+                  {t.rating > 0 && <Tag color={css.amber}>{"★".repeat(t.rating)}</Tag>}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
+                  {[["Entry", t.entryPrice], ["SL", t.sl], ["Target", t.target], ["R:R", rr ? `1:${rr}` : "—"]].map(([l, v]) => (
+                    <div key={l} style={{ background: css.bg, borderRadius: 8, padding: "10px 8px", textAlign: "center" }}>
+                      <div style={{ fontSize: 9, color: css.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 4 }}>{l}</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: l === "R:R" ? (parseFloat(rr) >= 2 ? css.green : css.amber) : css.text }}>{v || "—"}</div>
+                    </div>
+                  ))}
+                </div>
+                {t.confidenceLevel && (
+                  <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 10, color: css.textMuted, letterSpacing: 1 }}>CONFIDENCE</span>
+                    <div style={{ flex: 1, height: 4, background: css.bg, borderRadius: 99 }}>
+                      <div style={{ height: 4, width: `${(t.confidenceLevel / 5) * 100}%`, background: css.accent, borderRadius: 99 }} />
+                    </div>
+                    <span style={{ fontSize: 11, color: css.accent, fontWeight: 700 }}>{t.confidenceLevel}/5</span>
+                  </div>
+                )}
+              </div>
+              {[["📋 Setup Reason", t.reason], ["📝 চলাকালীন নোট", t.midNotes], ["❌ ভুল", t.mistake], ["💡 Lesson", t.lesson]].filter(([, v]) => v).map(([label, value]) => (
+                <div key={label} style={{ ...glassCard, marginBottom: 10 }}>
+                  <div style={{ fontSize: 10, color: css.textMuted, fontWeight: 700, letterSpacing: 2, marginBottom: 8 }}>{label}</div>
+                  <div style={{ fontSize: 13, color: "#cbd5e1", lineHeight: 1.8 }}>{value}</div>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+                <button onClick={() => openEdit(t)} style={{ flex: 1, padding: 12, borderRadius: 10, background: css.surface, border: `1px solid ${css.borderBright}`, color: css.text, fontSize: 13, cursor: "pointer", fontWeight: 700 }}>✏️ Edit</button>
+                <button onClick={() => setConfirmDeleteId(t.id)} style={{ flex: 1, padding: 12, borderRadius: 10, background: css.red + "15", border: `1px solid ${css.red}30`, color: css.red, fontSize: 13, cursor: "pointer", fontWeight: 700 }}>🗑 Delete</button>
+              </div>
+              {confirmDeleteId === t.id && (
+                <div style={{ position: "fixed", inset: 0, background: "#00000088", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999, padding: 24 }}>
+                  <div style={{ background: css.surface, border: `1px solid ${css.border}`, borderRadius: 16, padding: 24, maxWidth: 320, width: "100%", textAlign: "center" }}>
+                    <div style={{ fontSize: 36, marginBottom: 12 }}>🗑</div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: css.text, marginBottom: 8 }}>ট্রেড মুছবে?</div>
+                    <div style={{ fontSize: 13, color: css.textMuted, marginBottom: 20 }}>
+                      <strong style={{ color: css.text }}>{t.asset}</strong> — {t.date}<br />এটা আর ফিরিয়ে আনা যাবে না।
+                    </div>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      <button onClick={() => setConfirmDeleteId(null)} style={{ flex: 1, padding: 12, borderRadius: 10, background: css.bg, border: `1px solid ${css.border}`, color: css.textMuted, fontSize: 13, cursor: "pointer", fontWeight: 700 }}>বাতিল</button>
+                      <button onClick={() => deleteTrade(t.id)} style={{ flex: 1, padding: 12, borderRadius: 10, background: css.red, border: "none", color: "white", fontSize: 13, cursor: "pointer", fontWeight: 800 }}>হ্যাঁ, মুছে দাও</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      if (view === "analytics") {
+        const hasData = trades.length > 0;
+        return (
+          <div style={{ minHeight: "100vh", background: css.bg, color: css.text, padding: "20px 16px 100px" }}>
+            <div style={{ maxWidth: 520, margin: "0 auto" }}>
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontSize: 9, color: css.textMuted, letterSpacing: 3, marginBottom: 4 }}>PERFORMANCE</div>
+                <h1 style={{ margin: 0, fontSize: 26, fontWeight: 900, color: css.text }}>Analytics</h1>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
+                <StatCard label="Total P&L" value={fmtPnL(stats.totalPnL)} color={stats.totalPnL >= 0 ? css.green : css.red} />
+                <StatCard label="Win Rate" value={`${stats.winRate}%`} color={css.accent} sub={`${stats.profits}W / ${stats.losses}L`} />
+                <StatCard label="Profit Factor" value={stats.profitFactor} color={css.amber} />
+                <StatCard label="Max Drawdown" value={fmtPnL(stats.maxDrawdown)} color={css.red} />
+                <StatCard label="Avg Win" value={fmtPnL(stats.avgWin)} color={css.green} />
+                <StatCard label="Avg Loss" value={fmtPnL(stats.avgLoss)} color={css.red} />
+                <StatCard label="Streak" value={`${stats.streak}${stats.streakType === "W" ? "🔥" : stats.streakType === "L" ? "❄️" : "—"}`} color={stats.streakType === "W" ? css.green : css.red} sub={stats.streakType === "W" ? "Win streak" : "Loss streak"} />
+                <StatCard label="Plan Followed" value={`${stats.total ? Math.round((stats.followedPlan / stats.total) * 100) : 0}%`} color={css.purple} sub={`${stats.followedPlan}/${stats.total}`} />
+              </div>
+              {hasData && equityCurve.length > 1 && (
+                <div style={{ ...glassCard, marginBottom: 14 }}>
+                  <div style={{ fontSize: 10, color: css.textMuted, letterSpacing: 2, marginBottom: 12, fontWeight: 700 }}>EQUITY CURVE</div>
+                  <ResponsiveContainer width="100%" height={150}>
+                    <AreaChart data={equityCurve}>
+                      <defs>
+                        <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={css.accent} stopOpacity={0.3} />
+                          <stop offset="95%" stopColor={css.accent} stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <XAxis dataKey="date" tick={{ fontSize: 9, fill: css.textMuted }} tickLine={false} axisLine={false} />
+                      <YAxis tick={{ fontSize: 9, fill: css.textMuted }} tickLine={false} axisLine={false} width={40} />
+                      <Tooltip content={<ChartTooltip />} />
+                      <ReferenceLine y={0} stroke={css.border} strokeDasharray="4 4" />
+                      <Area type="monotone" dataKey="equity" stroke={css.accent} strokeWidth={2} fill="url(#eqGrad)" dot={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+              {hasData && dailyPnL.length > 1 && (
+                <div style={{ ...glassCard, marginBottom: 14 }}>
+                  <div style={{ fontSize: 10, color: css.textMuted, letterSpacing: 2, marginBottom: 12, fontWeight: 700 }}>DAILY P&L</div>
+                  <ResponsiveContainer width="100%" height={120}>
+                    <BarChart data={dailyPnL}>
+                      <XAxis dataKey="date" tick={{ fontSize: 9, fill: css.textMuted }} tickLine={false} axisLine={false} />
+                      <YAxis tick={{ fontSize: 9, fill: css.textMuted }} tickLine={false} axisLine={false} width={40} />
+                      <Tooltip content={<ChartTooltip />} />
+                      <ReferenceLine y={0} stroke={css.border} />
+                      <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
+                        {dailyPnL.map((d, i) => <Cell key={i} fill={d.pnl >= 0 ? css.green : css.red} fillOpacity={0.8} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+              {strategyStats.length > 0 && (
+                <div style={{ ...glassCard, marginBottom: 14 }}>
+                  <div style={{ fontSize: 10, color: css.textMuted, letterSpacing: 2, marginBottom: 12, fontWeight: 700 }}>STRATEGY BREAKDOWN</div>
+                  {strategyStats.map(s => (
+                    <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                      <div style={{ width: 80, fontSize: 11, color: css.text, fontWeight: 700 }}>{s.name}</div>
+                      <div style={{ flex: 1, height: 6, background: css.bg, borderRadius: 99 }}>
+                        <div style={{ height: 6, width: `${s.wr}%`, background: s.wr >= 50 ? css.green : css.red, borderRadius: 99 }} />
+                      </div>
+                      <div style={{ fontSize: 11, color: s.wr >= 50 ? css.green : css.red, fontWeight: 700, width: 36, textAlign: "right" }}>{s.wr}%</div>
+                      <div style={{ fontSize: 11, color: s.pnl >= 0 ? css.green : css.red, width: 50, textAlign: "right" }}>{fmtPnL(s.pnl)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {!hasData && (
+                <div style={{ textAlign: "center", padding: "60px 0", color: css.textMuted }}>
+                  <div style={{ fontSize: 48, marginBottom: 12 }}>📊</div>
+                  <div style={{ fontSize: 14 }}>ট্রেড লেখার পর Analytics দেখা যাবে</div>
+                </div>
+              )}
+            </div>
+            <Nav />
+          </div>
+        );
+      }
+
+      if (view === "weekly") {
+        const thisWeek = (() => {
+          const now = new Date();
+          const day = now.getDay();
+          const monday = new Date(now);
+          monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
+          monday.setHours(0, 0, 0, 0);
+          return trades.filter(t => new Date(t.date) >= monday);
+        })();
+        const wStats = { total: thisWeek.length, profits: thisWeek.filter(t => t.result?.includes("Profit")).length, losses: thisWeek.filter(t => t.result?.includes("Loss")).length, pnl: thisWeek.reduce((a, t) => a + (parseFloat(t.resultAmount) || 0), 0), planned: thisWeek.filter(t => t.followedPlan === "হ্যাঁ ✅").length };
+        return (
+          <div style={{ minHeight: "100vh", background: css.bg, color: css.text, padding: "20px 16px 100px" }}>
+            <div style={{ maxWidth: 520, margin: "0 auto" }}>
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontSize: 9, color: css.textMuted, letterSpacing: 3, marginBottom: 4 }}>THIS WEEK</div>
+                <h1 style={{ margin: 0, fontSize: 26, fontWeight: 900, color: css.text }}>Weekly Review</h1>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 20 }}>
+                <StatCard label="Trades" value={wStats.total} color={css.accent} />
+                <StatCard label="Win Rate" value={wStats.total ? `${Math.round(wStats.profits / wStats.total * 100)}%` : "—"} color={css.green} />
+                <StatCard label="P&L" value={fmtPnL(wStats.pnl)} color={wStats.pnl >= 0 ? css.green : css.red} />
+              </div>
+              {thisWeek.length > 0 && (
+                <div style={{ ...glassCard, marginBottom: 14 }}>
+                  <div style={{ fontSize: 10, color: css.textMuted, letterSpacing: 2, marginBottom: 12, fontWeight: 700 }}>MOOD DISTRIBUTION</div>
+                  {MOODS.map(m => {
+                    const count = thisWeek.filter(t => t.mood === m).length;
+                    if (count === 0) return null;
+                    return (
+                      <div key={m} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                        <div style={{ width: 90, fontSize: 11, color: css.text }}>{m}</div>
+                        <div style={{ flex: 1, height: 4, background: css.bg, borderRadius: 99 }}>
+                          <div style={{ height: 4, width: `${(count / thisWeek.length) * 100}%`, background: MOOD_COLORS[m], borderRadius: 99 }} />
+                        </div>
+                        <div style={{ fontSize: 11, color: css.textMuted, width: 20 }}>{count}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div style={{ ...glassCard, marginBottom: 14 }}>
+                <div style={{ fontSize: 10, color: css.textMuted, letterSpacing: 2, marginBottom: 10, fontWeight: 700 }}>📝 WEEKLY NOTES</div>
+                <Textarea value={weeklyNote} onChange={saveWeekly} placeholder="এই সপ্তাহে কী শিখলাম? বারবার কোন ভুল হলো? পরের সপ্তাহে কী পরিবর্তন করব?" rows={6} />
+              </div>
+              {thisWeek.length > 0 && (
+                <div style={{ ...glassCard }}>
+                  <div style={{ fontSize: 10, color: css.textMuted, letterSpacing: 2, marginBottom: 10, fontWeight: 700 }}>PLAN DISCIPLINE</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ flex: 1, height: 8, background: css.bg, borderRadius: 99 }}>
+                      <div style={{ height: 8, borderRadius: 99, width: `${(wStats.planned / wStats.total) * 100}%`, background: `linear-gradient(90deg, ${css.accent}, ${css.green})` }} />
+                    </div>
+                    <span style={{ fontSize: 14, fontWeight: 900, color: css.green }}>{Math.round((wStats.planned / wStats.total) * 100)}%</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: css.textMuted, marginTop: 8 }}>{wStats.planned}/{wStats.total} ট্রেডে plan মানা হয়েছে</div>
+                </div>
+              )}
+            </div>
+            <Nav />
+          </div>
+        );
+      }
+
+      if (authView === "splash") {
+        return (
+          <div style={{ minHeight: "100vh", background: css.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ textAlign: "center" }}><div style={{ fontSize: 40, marginBottom: 12 }}>📒</div><div style={{ fontSize: 13, color: css.textMuted, letterSpacing: 2 }}>LOADING…</div></div>
+          </div>
+        );
+      }
+
+      if (authView === "login" || authView === "signup") {
+        const isSignup = authView === "signup";
+        const inputStyle = { width: "100%", boxSizing: "border-box", background: css.bg, border: `1px solid ${css.border}`, borderRadius: 10, padding: "13px 16px", color: css.text, fontSize: 14, outline: "none", marginBottom: 12, display: "block" };
+        return (
+          <div style={{ minHeight: "100vh", background: css.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+            <div style={{ width: "100%", maxWidth: 380 }}>
+              <div style={{ textAlign: "center", marginBottom: 40 }}>
+                <div style={{ fontSize: 42, marginBottom: 10 }}>📒</div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6, justifyContent: "center" }}>
+                  <span style={{ fontSize: 28, fontWeight: 900, fontStyle: "italic", background: `linear-gradient(135deg, ${css.accent}, ${css.purple}, #ec4899)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", letterSpacing: -0.5 }}>Trading Journal</span>
+                </div>
+                <div style={{ fontSize: 11, color: css.textMuted, marginTop: 8 }}>তোমার ট্রেড, তোমার data — সবসময় সুরক্ষিত</div>
+              </div>
+              <div style={{ background: css.surface, border: `1px solid ${css.border}`, borderRadius: 16, padding: 24 }}>
+                <div style={{ fontSize: 16, fontWeight: 800, color: css.text, marginBottom: 20, textAlign: "center" }}>{isSignup ? "নতুন Account খোলো" : "Login করো"}</div>
+                <input type="text" placeholder="Username" value={authForm.username} onChange={e => setAuthForm(f => ({ ...f, username: e.target.value }))} style={inputStyle} autoComplete="username" />
+                <input type="password" placeholder="Password" value={authForm.password} onChange={e => setAuthForm(f => ({ ...f, password: e.target.value }))} onKeyDown={e => { if (e.key === "Enter" && !isSignup) handleLogin(); }} style={inputStyle} autoComplete={isSignup ? "new-password" : "current-password"} />
+                {isSignup && <input type="password" placeholder="Password আবার দাও" value={authForm.confirmPassword} onChange={e => setAuthForm(f => ({ ...f, confirmPassword: e.target.value }))} onKeyDown={e => { if (e.key === "Enter") handleSignup(); }} style={inputStyle} autoComplete="new-password" />}
+                {authError && <div style={{ background: css.red + "18", border: `1px solid ${css.red}40`, borderRadius: 8, padding: "10px 14px", color: css.red, fontSize: 13, marginBottom: 14, textAlign: "center" }}>{authError}</div>}
+                <button onClick={isSignup ? handleSignup : handleLogin} style={{ width: "100%", padding: "13px", borderRadius: 10, background: `linear-gradient(135deg, ${css.accent}, ${css.purple})`, border: "none", color: "white", fontSize: 14, fontWeight: 800, cursor: "pointer", boxShadow: `0 6px 20px ${css.accentGlow}`, marginBottom: 14 }}>{isSignup ? "✅ Account তৈরি করো" : "🔑 Login করো"}</button>
+                <div style={{ textAlign: "center", fontSize: 13, color: css.textMuted }}>
+                  {isSignup ? "আগে থেকে account আছে? " : "নতুন ব্যবহারকারী? "}
+                  <span onClick={() => { setAuthView(isSignup ? "login" : "signup"); setAuthError(""); setAuthForm({ username: "", password: "", confirmPassword: "" }); }} style={{ color: css.accent, cursor: "pointer", fontWeight: 700 }}>{isSignup ? "Login করো" : "Account খোলো"}</span>
+                </div>
+              </div>
+              <div style={{ textAlign: "center", marginTop: 20, fontSize: 11, color: css.textDim }}>🔒 Data সম্পূর্ণ তোমার — কোনো email লাগবে না</div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div style={{ minHeight: "100vh", background: css.bg, color: css.text, padding: "20px 16px 100px" }}>
+          <div style={{ maxWidth: 520, margin: "0 auto" }}>
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                    <span style={{ fontSize: 28, fontWeight: 900, fontStyle: "italic", background: `linear-gradient(135deg, ${css.accent}, ${css.purple}, #ec4899)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", letterSpacing: -0.5 }}>Trading Journal</span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 9, color: css.textMuted, letterSpacing: 1, marginBottom: 1 }}>TOTAL P&L</div>
+                    <div style={{ fontSize: 20, fontWeight: 900, color: stats.totalPnL >= 0 ? css.green : css.red }}>{stats.total > 0 ? fmtPnL(stats.totalPnL) : "—"}</div>
+                  </div>
+                  <div style={{ position: "relative" }}>
+                    <button onClick={() => setMenuOpen(o => !o)} style={{ background: css.surface, border: `1px solid ${menuOpen ? css.accent : css.border}`, borderRadius: 10, width: 42, height: 42, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, padding: 0, transition: "border-color 0.2s" }}>
+                      {[0, 1, 2].map(i => <div key={i} style={{ width: i === 1 ? 14 : 18, height: 2, borderRadius: 2, background: menuOpen ? css.accent : css.textMuted, transition: "all 0.2s" }} />)}
+                    </button>
+                    {menuOpen && (
+                      <div style={{ position: "absolute", top: 50, right: 0, zIndex: 200, background: css.surface, border: `1px solid ${css.borderBright}`, borderRadius: 14, padding: 8, minWidth: 180, boxShadow: `0 12px 40px #00000060` }}>
+                        <div style={{ padding: "10px 12px 10px", borderBottom: `1px solid ${css.border}`, marginBottom: 8 }}>
+                          <div style={{ fontSize: 10, color: css.textMuted, letterSpacing: 1, marginBottom: 2 }}>LOGGED IN AS</div>
+                          <div style={{ fontSize: 13, color: css.accent, fontWeight: 800 }}>👤 {currentUser}</div>
+                        </div>
+                        <button onClick={() => { exportData(); setMenuOpen(false); }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, background: "none", border: "none", color: css.text, borderRadius: 9, padding: "10px 12px", cursor: "pointer", fontSize: 13, fontWeight: 600, textAlign: "left" }}><span style={{ fontSize: 16 }}>⬇</span> Export JSON</button>
+                        <label style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, background: "none", color: css.accent, borderRadius: 9, padding: "10px 12px", cursor: "pointer", fontSize: 13, fontWeight: 600 }}><span style={{ fontSize: 16 }}>⬆</span> Import JSON<input type="file" accept=".json" onChange={(e) => { importData(e); setMenuOpen(false); }} style={{ display: "none" }} /></label>
+                        <div style={{ height: 1, background: css.border, margin: "6px 0" }} />
+                        <button onClick={() => { handleLogout(); setMenuOpen(false); }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, background: "none", border: "none", color: css.red, borderRadius: 9, padding: "10px 12px", cursor: "pointer", fontSize: 13, fontWeight: 600, textAlign: "left" }}><span style={{ fontSize: 16 }}>🚪</span> Logout</button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              {importMsg && <div style={{ marginTop: 10, padding: "10px 14px", borderRadius: 9, background: importMsg.startsWith("✅") ? css.green + "18" : css.red + "18", border: `1px solid ${importMsg.startsWith("✅") ? css.green : css.red}40`, color: importMsg.startsWith("✅") ? css.green : css.red, fontSize: 13, fontWeight: 700, textAlign: "center" }}>{importMsg}</div>}
+            </div>
+
+            {stats.total > 0 && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 20 }}>
+                {[["TRADES", stats.total, css.accent], ["WIN%", `${stats.winRate}%`, css.green], ["WINS", stats.profits, css.green], ["LOSS", stats.losses, css.red]].map(([l, v, c]) => (
+                  <div key={l} style={{ background: css.surface, borderRadius: 10, padding: "10px 8px", textAlign: "center", border: `1px solid ${c}20` }}>
+                    <div style={{ fontSize: 16, fontWeight: 900, color: c }}>{v}</div>
+                    <div style={{ fontSize: 9, color: css.textMuted, fontWeight: 700, letterSpacing: 1.5, marginTop: 2 }}>{l}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <input value={filterAsset} onChange={e => setFilterAsset(e.target.value)} placeholder="🔍 Asset search…" style={{ flex: 1, background: css.surface, border: `1px solid ${css.border}`, borderRadius: 8, padding: "8px 12px", color: css.text, fontSize: 12, outline: "none" }} />
+              <select value={filterResult} onChange={e => setFilterResult(e.target.value)} style={{ background: css.surface, border: `1px solid ${css.border}`, borderRadius: 8, padding: "8px 10px", color: filterResult ? css.text : css.textMuted, fontSize: 12, outline: "none", cursor: "pointer" }}>
+                <option value="">All</option>
+                {RESULTS.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+
+            {filteredTrades.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "80px 0", color: css.textMuted }}>
+                <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.4 }}>📒</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: css.textMuted, marginBottom: 8 }}>{trades.length === 0 ? "এখনো কোনো ট্রেড নেই" : "কোনো ট্রেড পাওয়া গেল না"}</div>
+                <div style={{ fontSize: 12, color: css.textDim }}>{trades.length === 0 ? "+ বোতাম দিয়ে প্রথম ট্রেড লেখো" : "ফিল্টার পরিবর্তন করো"}</div>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {filteredTrades.map(t => {
+                  const resultColor = t.result?.includes("Profit") ? css.green : t.result?.includes("Loss") ? css.red : css.textMuted;
+                  const moodColor = MOOD_COLORS[t.mood] || css.textMuted;
+                  const pnl = parseFloat(t.resultAmount);
+                  const rr = calcRR(t.entryPrice, t.sl, t.target, t.direction);
+                  return (
+                    <div key={t.id} onClick={() => { setSelectedTrade(t); setView("detail"); }} style={{ background: css.surface, borderRadius: 14, padding: 16, border: `1px solid ${css.border}`, borderLeft: `3px solid ${resultColor}`, cursor: "pointer" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                        <div>
+                          <div style={{ fontWeight: 900, fontSize: 18, color: css.text, letterSpacing: 0.5 }}>{t.asset}</div>
+                          <div style={{ fontSize: 11, color: css.textMuted, marginTop: 2 }}>{t.date} {t.timeframe && `· ${t.timeframe}`} {t.session && `· ${t.session}`}</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: 12, color: t.direction === "Buy 📈" ? css.green : css.red, fontWeight: 700, marginBottom: 4 }}>{t.direction}</div>
+                          {!isNaN(pnl) && <div style={{ fontSize: 18, fontWeight: 900, color: resultColor }}>{fmtPnL(pnl)}</div>}
+                        </div>
+                      </div>
+                      {t.reason && <div style={{ fontSize: 12, color: css.textMuted, marginBottom: 10, lineHeight: 1.5, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 1, WebkitBoxOrient: "vertical" }}>{t.reason}</div>}
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                        {t.result && <Tag color={resultColor}>{t.result}</Tag>}
+                        {t.strategy && <Tag color={css.accent}>{t.strategy}</Tag>}
+                        {t.mood && <Tag color={moodColor}>{t.mood}</Tag>}
+                        {rr && <Tag color={parseFloat(rr) >= 2 ? css.green : css.amber}>1:{rr}</Tag>}
+                        {t.rating > 0 && <span style={{ fontSize: 12, color: css.amber }}>{"★".repeat(t.rating)}</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <Nav />
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<TradingJournalPro />);
+  </script>
+</body>
+</html>
+
